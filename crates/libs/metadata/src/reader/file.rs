@@ -6,6 +6,8 @@ pub struct File {
     bytes: Vec<u8>,
     strings: usize,
     blobs: usize,
+    user_strings: usize,
+    sections: Vec<IMAGE_SECTION_HEADER>,
     pub(crate) tables: [Table; TABLE_LEN],
 }
 
@@ -117,7 +119,7 @@ impl File {
                 b"#Blob" => result.blobs = metadata_offset + stream_offset,
                 b"#~" => tables_data = (metadata_offset + stream_offset, stream_len),
                 b"#GUID" => {}
-                b"#US" => {}
+                b"#US" => result.user_strings = metadata_offset + stream_offset,
                 _ => unimplemented!(),
             }
             let mut padding = 4 - stream_name.len() % 4;
@@ -323,7 +325,16 @@ impl File {
         result.tables[TABLE_NESTEDCLASS].set_data(&mut view);
         result.tables[TABLE_GENERICPARAM].set_data(&mut view);
 
+        result.sections = sections.to_vec();
         Ok(result)
+    }
+
+    pub fn section_from_rva(&self, rva: u32) -> Result<&IMAGE_SECTION_HEADER> {
+        self.sections.iter().find(|&s| rva >= s.VirtualAddress && rva < s.VirtualAddress + unsafe { s.Misc.VirtualSize }).ok_or_else(error_invalid_winmd)
+    }
+
+    pub fn offset_from_rva(&self, section: &IMAGE_SECTION_HEADER, rva: u32) -> usize {
+        (rva - section.VirtualAddress + section.PointerToRawData) as usize
     }
 
     pub fn usize(&self, row: usize, table: usize, column: usize) -> usize {
@@ -353,6 +364,36 @@ impl File {
         let bytes = &self.bytes[offset..];
         let nul_pos = bytes.iter().position(|&c| c == 0).expect("expected null-terminated C-string");
         std::str::from_utf8(&bytes[..nul_pos]).expect("expected valid utf-8 C-string")
+    }
+
+    /// Returns the string from the `#US` stream as referenced by
+    /// the (table, row, column) triple.
+    ///
+    /// # Panics
+    ///
+    /// * When any element of the (table, row, column) triple is invalid.
+    /// * When the offset in the string table is out of bounds.
+    /// * When no null terminator can be found in the string table.
+    /// * When the null-terminated string is not valid utf-8.
+    pub fn user_str(&self, offset: usize) -> String {
+        let offset = self.user_strings + offset;
+        let len = (Self::peak_compressed_integer(&self.bytes[offset..]) - 1) / 2;
+        let bytes = unsafe { std::slice::from_raw_parts(self.bytes.as_ptr().add(offset + 1) as *const u16, len as _) };
+        String::from_utf16(bytes).expect("expected valid utf-8 C-string")
+    }
+
+    fn peak_compressed_integer(mem: &[u8]) -> u32 {
+        let header_byte = mem[0];
+        if header_byte & 0x80 == 0 {
+            return header_byte as _;
+        }
+        if header_byte & 0x40 == 0 {
+            return ((header_byte & 0x3f) as u32) << 8 | mem[1] as u32;
+        }
+        if header_byte & 0x20 == 0 {
+            return ((header_byte & 0x1f) as u32) << 24 | (mem[1] as u32) << 16 | (mem[2] as u32) << 8 | mem[3] as u32;
+        }
+        panic!("invalid compressed integer");
     }
 
     pub fn blob(&self, row: usize, table: usize, column: usize) -> &[u8] {

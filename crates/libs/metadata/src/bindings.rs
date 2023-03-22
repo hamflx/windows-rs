@@ -126,6 +126,7 @@ pub struct IMAGE_OPTIONAL_HEADER64 {
     pub DataDirectory: [IMAGE_DATA_DIRECTORY; 16],
 }
 
+#[derive(Clone)]
 #[repr(C)]
 pub struct IMAGE_SECTION_HEADER {
     pub Name: [u8; 8],
@@ -140,6 +141,7 @@ pub struct IMAGE_SECTION_HEADER {
     pub Characteristics: IMAGE_SECTION_CHARACTERISTICS,
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub union IMAGE_SECTION_HEADER_0 {
     pub PhysicalAddress: u32,
